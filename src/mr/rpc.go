@@ -29,13 +29,14 @@ type RequestTaskArgs struct {
 }
 
 type RequestTaskReply struct {
+	TaskType   string
 	TaskNumber int
 	TaskData   []string
 }
 
 type ReturnTaskResultsArgs struct {
 	TaskNumber int
-	Results    []KeyValue
+	Results    []string
 }
 type ReturnTaskResultsReply struct {
 	Value string

@@ -1,11 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
-	"strings"
+	"os"
 )
 
 // Map functions return a slice of KeyValue.
@@ -21,26 +23,60 @@ func ihash(key string) int {
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
-
-// main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	done := 0
-	// Your worker implementation here.
+	var filenames []string // Define outside to use later in the loop
 
 	for done < 10 {
-
-		// uncomment to send the Example RPC to the coordinator.
-		task, _ := CallRequestTask()
-		log.Printf("task %v: %s", task.TaskNumber, task.TaskData[0])
-		results := mapf("", strings.Join(task.TaskData, " "))
-
-		CallReturnTaskResults(task.TaskNumber, results)
-		if CallDone() {
-			done = 10
+		reply, err := CallRequestTask()
+		if err != nil {
+			log.Fatalf("Error calling RequestTask: %v", err)
 		}
-	}
 
+		if reply.TaskType == "Map" {
+			file, err := os.Open(reply.TaskData[0])
+			if err != nil {
+				log.Fatalf("failed to open file: %v", err)
+			}
+			content, err := ioutil.ReadAll(file)
+			file.Close() // Handle close here instead of defer in the loop
+			if err != nil {
+				log.Fatalf("failed to read file content: %v", err)
+			}
+
+			results := mapf("", string(content))
+			intermediate := make([][]KeyValue, 10)
+			for _, kv := range results {
+				r := ihash(kv.Key) % 10
+				intermediate[r] = append(intermediate[r], kv)
+			}
+
+			filenames = make([]string, 10) // Reset for new map task
+			for i, kvs := range intermediate {
+				filename := fmt.Sprintf("mr-%d-%d", reply.TaskNumber, i)
+				filenames[i] = filename // Assign to correct index
+				file, err := os.Create(filename)
+				if err != nil {
+					log.Fatalf("failed to create file: %v", err)
+				}
+
+				enc := json.NewEncoder(file)
+				for _, kv := range kvs {
+					if err := enc.Encode(&kv); err != nil {
+						log.Fatalf("failed to encode KeyValue: %v", err)
+					}
+				}
+				file.Close() // Close here after all operations are done
+			}
+		} else if reply.TaskType == "Reduce" {
+			done += 1
+			for _, file := range reply.TaskData {
+				log.Printf("%s", file)
+			}
+		}
+
+		CallReturnTaskResults(reply.TaskNumber, filenames)
+	}
 }
 
 func CallDone() bool {
@@ -55,6 +91,7 @@ func CallDone() bool {
 }
 
 func CallRequestTask() (RequestTaskReply, error) {
+	log.Printf("request task")
 	args := RequestTaskArgs{}
 	args.Text = "test"
 	reply := RequestTaskReply{}
@@ -66,10 +103,10 @@ func CallRequestTask() (RequestTaskReply, error) {
 	}
 }
 
-func CallReturnTaskResults(taskNumber int, results []KeyValue) {
+func CallReturnTaskResults(taskNumber int, filenames []string) {
 
 	args := ReturnTaskResultsArgs{}
-	args.Results = results
+	args.Results = filenames
 	args.TaskNumber = taskNumber
 	reply := ReturnTaskResultsReply{}
 	ok := call("Coordinator.ReturnTaskResults", &args, &reply)

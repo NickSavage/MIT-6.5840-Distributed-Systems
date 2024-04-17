@@ -1,7 +1,7 @@
 package mr
 
 import (
-	"bufio"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -10,17 +10,23 @@ import (
 )
 
 type Task struct {
-	TaskNumber   int
-	TaskData     []string
-	isComplete   bool
-	isInProgress bool
+	TaskType   string
+	TaskNumber int
+	TaskData   []string
+	TaskStatus string
+	isComplete bool
 }
 
 type Coordinator struct {
 	// Your definitions here.
-	isComplete    bool
-	completeTasks int
-	tasks         []Task
+	isComplete          bool
+	completeMapTasks    int
+	completeReduceTasks int
+	mapTasks            []Task
+	reduceTasks         []Task
+
+	allMapComplete    bool
+	allReduceComplete bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -34,36 +40,43 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
-	for i, task := range c.tasks {
-		log.Printf("check task %v", i)
-		if !task.isComplete {
-			log.Print("found task %v", i)
-			reply.TaskNumber = task.TaskNumber
-			reply.TaskData = task.TaskData
-			task.isInProgress = true
-			break
+	if !c.allMapComplete {
+		for i, task := range c.mapTasks {
+			if !task.isComplete && task.TaskStatus != "In Progress" {
+				log.Printf("found task %v", i)
+				reply.TaskNumber = task.TaskNumber
+				reply.TaskData = task.TaskData
+				task.TaskStatus = "In Progress"
+				break
+			}
+		}
+	}
+	if c.allMapComplete && !c.allReduceComplete {
+		for i, task := range c.reduceTasks {
+			if !task.isComplete && task.TaskStatus != "In Progress" {
+				log.Printf("found reduce task %v", i)
+				reply.TaskNumber = task.TaskNumber
+				reply.TaskType = "Reduce"
+				reply.TaskData = task.TaskData
+				task.TaskStatus = "In Progress"
+				break
+			}
 		}
 	}
 	return nil
 }
 
 func (c *Coordinator) ReturnTaskResults(args *ReturnTaskResultsArgs, reply *ReturnTaskResultsReply) error {
-	for _, result := range args.Results {
-		log.Printf("%s, %s", result.Key, result.Value)
-	}
-	for i, task := range c.tasks {
+	for i, task := range c.mapTasks {
 		if task.TaskNumber == args.TaskNumber {
-			c.tasks[i].isComplete = true
-			c.completeTasks += 1
+
+			c.mapTasks[i].isComplete = true
+			c.completeMapTasks += 1
+			if c.completeMapTasks+1 == len(c.mapTasks) {
+				c.allMapComplete = true
+			}
 			break
 		}
-	}
-	return nil
-}
-
-func (c *Coordinator) CheckDone(args *DoneArgs, reply *DoneReply) error {
-	if c.completeTasks+1 == len(c.tasks) {
-		reply.IsDone = true
 	}
 	return nil
 }
@@ -85,11 +98,27 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
+
 	ret := false
+	if c.completeMapTasks+1 == len(c.mapTasks) {
+		if c.completeReduceTasks+1 == len(c.reduceTasks) {
+			ret = true
+		}
+	}
 
 	// Your code here.
 
 	return ret
+}
+
+func generateInputFiles(i int, file int) []string {
+	var inputFiles []string
+
+	for j := 0; j < file; j++ {
+		inputFiles = append(inputFiles, fmt.Sprintf("mr-%d-%d", j, i))
+	}
+
+	return inputFiles
 }
 
 // create a Coordinator.
@@ -98,39 +127,30 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
-	log.Printf("hello world")
-	// Your code here.
-
-	file, err := os.Open(files[0])
-	if err != nil {
-		log.Fatalf("failed to open file: %s", err)
-	}
-	defer file.Close() // Make sure to close the file later
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	// Check for errors during Scan
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("error during scan: %s", err)
-	}
-
 	counter := 0
-	for _, line := range lines {
-		task := Task{}
-		task.TaskData = append(task.TaskData, line)
-		task.TaskNumber = counter
+	for _, file := range files {
+		task := Task{
+			TaskType:   "Map",
+			TaskData:   []string{file},
+			TaskNumber: counter,
+			TaskStatus: "Not Started",
+			isComplete: false,
+		}
 		task.isComplete = false
-		c.tasks = append(c.tasks, task)
+		c.mapTasks = append(c.mapTasks, task)
 		counter += 1
 	}
-	c.completeTasks = 0
-	for _, task := range c.tasks {
-		log.Printf("%v, %s", task.TaskNumber, task.TaskData)
+	for i := 0; i < nReduce; i++ {
+		c.reduceTasks = append(c.reduceTasks, Task{
+			TaskType:   "Reduce",
+			TaskData:   generateInputFiles(i, len(files)),
+			TaskNumber: i,
+			TaskStatus: "Not Started",
+			isComplete: false,
+		})
 	}
+	c.completeMapTasks = 0
+	c.completeReduceTasks = 0
 	c.server()
 	return &c
 }
