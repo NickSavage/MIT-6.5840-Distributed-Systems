@@ -2,7 +2,6 @@ package mr
 
 import (
 	"bufio"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -11,14 +10,17 @@ import (
 )
 
 type Task struct {
-	TaskNumber int
-	TaskData   []string
+	TaskNumber   int
+	TaskData     []string
+	isComplete   bool
+	isInProgress bool
 }
 
 type Coordinator struct {
 	// Your definitions here.
-	isComplete bool
-	tasks      []Task
+	isComplete    bool
+	completeTasks int
+	tasks         []Task
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -31,15 +33,37 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) RequestJob(args *RequestTaskArgs, reply *RequestTaskReply) error {
-	reply.Text = "world"
+func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
+	for i, task := range c.tasks {
+		log.Printf("check task %v", i)
+		if !task.isComplete {
+			log.Print("found task %v", i)
+			reply.TaskNumber = task.TaskNumber
+			reply.TaskData = task.TaskData
+			task.isInProgress = true
+			break
+		}
+	}
 	return nil
 }
-func (c *Coordinator) RequestDone(args *RequestTaskArgs, reply *RequestTaskReply) error {
-	if c.isComplete {
-		reply.Text = "done"
-	} else {
-		reply.Text = "not done"
+
+func (c *Coordinator) ReturnTaskResults(args *ReturnTaskResultsArgs, reply *ReturnTaskResultsReply) error {
+	for _, result := range args.Results {
+		log.Printf("%s, %s", result.Key, result.Value)
+	}
+	for i, task := range c.tasks {
+		if task.TaskNumber == args.TaskNumber {
+			c.tasks[i].isComplete = true
+			c.completeTasks += 1
+			break
+		}
+	}
+	return nil
+}
+
+func (c *Coordinator) CheckDone(args *DoneArgs, reply *DoneReply) error {
+	if c.completeTasks+1 == len(c.tasks) {
+		reply.IsDone = true
 	}
 	return nil
 }
@@ -94,8 +118,18 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		log.Fatalf("error during scan: %s", err)
 	}
 
+	counter := 0
 	for _, line := range lines {
-		fmt.Println(line)
+		task := Task{}
+		task.TaskData = append(task.TaskData, line)
+		task.TaskNumber = counter
+		task.isComplete = false
+		c.tasks = append(c.tasks, task)
+		counter += 1
+	}
+	c.completeTasks = 0
+	for _, task := range c.tasks {
+		log.Printf("%v, %s", task.TaskNumber, task.TaskData)
 	}
 	c.server()
 	return &c

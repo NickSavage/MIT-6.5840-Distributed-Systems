@@ -29,7 +29,23 @@ type RequestTaskArgs struct {
 }
 
 type RequestTaskReply struct {
-	Text string
+	TaskNumber int
+	TaskData   []string
+}
+
+type ReturnTaskResultsArgs struct {
+	TaskNumber int
+	Results    []KeyValue
+}
+type ReturnTaskResultsReply struct {
+	Value string
+}
+
+type DoneArgs struct {
+}
+
+type DoneReply struct {
+	IsDone bool
 }
 
 // Add your RPC definitions here.

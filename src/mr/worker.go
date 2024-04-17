@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"log"
 	"net/rpc"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -24,24 +25,60 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
+	done := 0
 	// Your worker implementation here.
 
-	// uncomment to send the Example RPC to the coordinator.
-	CallTest()
+	for done < 10 {
+
+		// uncomment to send the Example RPC to the coordinator.
+		task, _ := CallRequestTask()
+		log.Printf("task %v: %s", task.TaskNumber, task.TaskData[0])
+		results := mapf("", strings.Join(task.TaskData, " "))
+
+		CallReturnTaskResults(task.TaskNumber, results)
+		if CallDone() {
+			done = 10
+		}
+	}
 
 }
 
-func CallTest() {
-	args := RequestArgs{}
-	args.Text = "test"
-	reply := RequestReply{}
-	ok := call("Coordinator.RequestJob", &args, &reply)
+func CallDone() bool {
+	args := DoneArgs{}
+	reply := DoneReply{}
+	ok := call("Coordinator.CheckDone", &args, &reply)
 	if ok {
-		fmt.Printf("name %s\n", reply.Text)
+		return reply.IsDone
 	} else {
-		fmt.Printf("call failed!\n")
+		return true
 	}
+}
+
+func CallRequestTask() (RequestTaskReply, error) {
+	args := RequestTaskArgs{}
+	args.Text = "test"
+	reply := RequestTaskReply{}
+	ok := call("Coordinator.RequestTask", &args, &reply)
+	if ok {
+		return reply, nil
+	} else {
+		return RequestTaskReply{}, fmt.Errorf("no strings returned")
+	}
+}
+
+func CallReturnTaskResults(taskNumber int, results []KeyValue) {
+
+	args := ReturnTaskResultsArgs{}
+	args.Results = results
+	args.TaskNumber = taskNumber
+	reply := ReturnTaskResultsReply{}
+	ok := call("Coordinator.ReturnTaskResults", &args, &reply)
+	if ok {
+		log.Printf("%s", reply.Value)
+	} else {
+		log.Printf("error")
+	}
+
 }
 
 // example function to show how to make an RPC call to the coordinator.
