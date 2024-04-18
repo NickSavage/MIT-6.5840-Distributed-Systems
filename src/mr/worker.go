@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 )
 
 // Map functions return a slice of KeyValue.
@@ -28,11 +29,13 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 	var filenames []string // Define outside to use later in the loop
 
 	for done < 10 {
+		done += 1
 		reply, err := CallRequestTask()
 		if err != nil {
 			log.Fatalf("Error calling RequestTask: %v", err)
 		}
 
+		log.Printf("Task %v", reply)
 		if reply.TaskType == "Map" {
 			file, err := os.Open(reply.TaskData[0])
 			if err != nil {
@@ -67,15 +70,64 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 					}
 				}
 				file.Close() // Close here after all operations are done
+				log.Printf("%v", filenames)
 			}
 		} else if reply.TaskType == "Reduce" {
-			done += 1
-			for _, file := range reply.TaskData {
-				log.Printf("%s", file)
+
+			// Load intermediate files
+			intermediate := []KeyValue{}
+			for m := 0; m < len(reply.TaskData); m++ {
+				file, err := os.Open(reply.TaskData[m])
+				if err != nil {
+					log.Fatalf("cannot open %v", reply.TaskData[m])
+				}
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv)
+				}
+				file.Close()
 			}
+
+			// Sort intermediate key-value pairs by key
+			sort.Slice(intermediate, func(i, j int) bool {
+				return intermediate[i].Key < intermediate[j].Key
+			})
+
+			// Create output file
+			oname := fmt.Sprintf("mr-out-%d", reply.TaskNumber)
+			ofile, _ := ioutil.TempFile("", oname)
+
+			// Apply reduce function
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+				fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+				i = j
+			}
+
+			// Close output file
+			ofile.Close()
+
+			// Rename output file
+			os.Rename(ofile.Name(), oname)
+
+			filenames = append(filenames, oname)
 		}
 
-		CallReturnTaskResults(reply.TaskNumber, filenames)
+		log.Printf("%v", filenames)
+		CallReturnTaskResults(reply.TaskType, reply.TaskNumber, filenames)
 	}
 }
 
@@ -103,11 +155,13 @@ func CallRequestTask() (RequestTaskReply, error) {
 	}
 }
 
-func CallReturnTaskResults(taskNumber int, filenames []string) {
+func CallReturnTaskResults(taskType string, taskNumber int, filenames []string) {
 
 	args := ReturnTaskResultsArgs{}
 	args.Results = filenames
 	args.TaskNumber = taskNumber
+	args.TaskType = taskType
+	log.Printf("results: %v", args)
 	reply := ReturnTaskResultsReply{}
 	ok := call("Coordinator.ReturnTaskResults", &args, &reply)
 	if ok {

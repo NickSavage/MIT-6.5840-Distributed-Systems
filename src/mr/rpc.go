@@ -36,6 +36,7 @@ type RequestTaskReply struct {
 
 type ReturnTaskResultsArgs struct {
 	TaskNumber int
+	TaskType   string
 	Results    []string
 }
 type ReturnTaskResultsReply struct {

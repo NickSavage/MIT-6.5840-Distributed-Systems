@@ -47,6 +47,7 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 				reply.TaskNumber = task.TaskNumber
 				reply.TaskData = task.TaskData
 				task.TaskStatus = "In Progress"
+				reply.TaskType = "Map"
 				break
 			}
 		}
@@ -67,15 +68,30 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 }
 
 func (c *Coordinator) ReturnTaskResults(args *ReturnTaskResultsArgs, reply *ReturnTaskResultsReply) error {
-	for i, task := range c.mapTasks {
-		if task.TaskNumber == args.TaskNumber {
+	log.Printf("return task %v", args)
+	if args.TaskType == "Map" {
+		for i, task := range c.mapTasks {
+			if task.TaskNumber == args.TaskNumber {
 
-			c.mapTasks[i].isComplete = true
-			c.completeMapTasks += 1
-			if c.completeMapTasks+1 == len(c.mapTasks) {
-				c.allMapComplete = true
+				c.mapTasks[i].isComplete = true
+				c.completeMapTasks += 1
+				if c.completeMapTasks+1 == len(c.mapTasks) {
+					c.allMapComplete = true
+				}
+				break
 			}
-			break
+		}
+	}
+	if args.TaskType == "Reduce" {
+		for i, task := range c.reduceTasks {
+			if task.TaskNumber == args.TaskNumber {
+				c.reduceTasks[i].isComplete = true
+				c.completeReduceTasks += 1
+				if c.completeReduceTasks+1 == len(c.reduceTasks) {
+					c.allReduceComplete = true
+				}
+				break
+			}
 		}
 	}
 	return nil
@@ -143,7 +159,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := 0; i < nReduce; i++ {
 		c.reduceTasks = append(c.reduceTasks, Task{
 			TaskType:   "Reduce",
-			TaskData:   generateInputFiles(i, len(files)),
+			TaskData:   generateInputFiles(i, len(files)-1),
 			TaskNumber: i,
 			TaskStatus: "Not Started",
 			isComplete: false,
