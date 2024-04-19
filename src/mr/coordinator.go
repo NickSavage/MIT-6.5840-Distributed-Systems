@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 )
 
 type Task struct {
@@ -19,34 +20,27 @@ type Task struct {
 
 type Coordinator struct {
 	// Your definitions here.
-	isComplete          bool
 	completeMapTasks    int
 	completeReduceTasks int
 	mapTasks            []Task
 	reduceTasks         []Task
+	mutex               sync.Mutex
 
 	allMapComplete    bool
 	allReduceComplete bool
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if !c.allMapComplete {
 		for i, task := range c.mapTasks {
 			if !task.isComplete && task.TaskStatus != "In Progress" {
-				log.Printf("found task %v", i)
 				reply.TaskNumber = task.TaskNumber
 				reply.TaskData = task.TaskData
-				task.TaskStatus = "In Progress"
+				c.mapTasks[i].TaskStatus = "In Progress"
 				reply.TaskType = "Map"
 				break
 			}
@@ -55,27 +49,34 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	if c.allMapComplete && !c.allReduceComplete {
 		for i, task := range c.reduceTasks {
 			if !task.isComplete && task.TaskStatus != "In Progress" {
-				log.Printf("found reduce task %v", i)
 				reply.TaskNumber = task.TaskNumber
 				reply.TaskType = "Reduce"
 				reply.TaskData = task.TaskData
+				c.reduceTasks[i].TaskStatus = "In Progress"
 				task.TaskStatus = "In Progress"
 				break
 			}
 		}
 	}
+	if c.allMapComplete && c.allReduceComplete {
+		reply.TaskType = "Sleep"
+	}
 	return nil
 }
 
 func (c *Coordinator) ReturnTaskResults(args *ReturnTaskResultsArgs, reply *ReturnTaskResultsReply) error {
-	log.Printf("return task %v", args)
+
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if args.TaskType == "Map" {
 		for i, task := range c.mapTasks {
 			if task.TaskNumber == args.TaskNumber {
 
 				c.mapTasks[i].isComplete = true
+				c.mapTasks[i].TaskStatus = "Complete"
 				c.completeMapTasks += 1
-				if c.completeMapTasks+1 == len(c.mapTasks) {
+				if c.completeMapTasks == len(c.mapTasks) {
 					c.allMapComplete = true
 				}
 				break
@@ -86,8 +87,9 @@ func (c *Coordinator) ReturnTaskResults(args *ReturnTaskResultsArgs, reply *Retu
 		for i, task := range c.reduceTasks {
 			if task.TaskNumber == args.TaskNumber {
 				c.reduceTasks[i].isComplete = true
+				c.reduceTasks[i].TaskStatus = "Complete"
 				c.completeReduceTasks += 1
-				if c.completeReduceTasks+1 == len(c.reduceTasks) {
+				if c.completeReduceTasks == len(c.reduceTasks) {
 					c.allReduceComplete = true
 				}
 				break
@@ -115,16 +117,9 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 
-	ret := false
-	if c.completeMapTasks+1 == len(c.mapTasks) {
-		if c.completeReduceTasks+1 == len(c.reduceTasks) {
-			ret = true
-		}
-	}
-
 	// Your code here.
 
-	return ret
+	return c.allMapComplete && c.allReduceComplete
 }
 
 func generateInputFiles(i int, file int) []string {
@@ -143,6 +138,7 @@ func generateInputFiles(i int, file int) []string {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
+	c.mutex = sync.Mutex{}
 	counter := 0
 	for _, file := range files {
 		task := Task{
@@ -159,7 +155,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for i := 0; i < nReduce; i++ {
 		c.reduceTasks = append(c.reduceTasks, Task{
 			TaskType:   "Reduce",
-			TaskData:   generateInputFiles(i, len(files)-1),
+			TaskData:   generateInputFiles(i, len(files)),
 			TaskNumber: i,
 			TaskStatus: "Not Started",
 			isComplete: false,
