@@ -170,19 +170,20 @@ func (rf *Raft) sendAppendEntries(server int) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	log.Printf("Server %d received AppendEntries from %d, term %d", rf.me, args.LeaderId, args.Term)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	log.Printf("Server %d received AppendEntries from %d, term %d, currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.lastHeartbeat = time.Now()
 	rf.state = "FOLLOWER"
 	rf.currentTerm = args.Term
 	reply.Success = true
 	reply.Term = rf.currentTerm
+	log.Printf("AppendEntriesReply: server %d, %v", rf.me, reply)
 }
 
 // example RequestVote RPC arguments structure.
@@ -345,13 +346,15 @@ func (rf *Raft) ticker() {
 		if rf.state == "LEADER" {
 			rf.mu.Lock()
 			for i := 0; i < len(rf.peers); i++ {
-				log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
-				rf.sendAppendEntries(i)
+				if i != rf.me {
+					log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
+					rf.sendAppendEntries(i)
+				}
 			}
 			rf.mu.Unlock()
 		}
 
-		ms := 300 + (rand.Int63() % 300)
+		ms := 150 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -376,7 +379,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.state = "FOLLOWER"
 	rf.currentTerm = 0
 	rf.lastHeartbeat = time.Now()
-	rf.electionTimeout = time.Duration(300+rand.Intn(150)) * time.Millisecond
+	rf.electionTimeout = time.Duration(150+(rand.Int63()%300)) * time.Millisecond
 	rf.votedFor = -1
 
 	// initialize from state persisted before a crash
