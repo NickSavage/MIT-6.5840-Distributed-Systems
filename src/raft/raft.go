@@ -180,6 +180,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	rf.lastHeartbeat = time.Now()
 	rf.state = "FOLLOWER"
+	rf.votedFor = -1
 	rf.currentTerm = args.Term
 	reply.Success = true
 	reply.Term = rf.currentTerm
@@ -298,6 +299,39 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) startElection() {
+
+	log.Printf("Server %d is starting an election", rf.me)
+	rf.mu.Lock()
+	rf.state = "CANDIDATE"
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
+	rf.votesReceived = 1
+	rf.mu.Unlock()
+
+	for i := 0; i < len(rf.peers); i++ {
+		if i != rf.me {
+			args := RequestVoteArgs{
+				Term:        rf.currentTerm,
+				CandidateId: rf.me,
+				//LastLogIndex: len(rf.log),
+				//	LastLogTerm:  rf.log[len(rf.log)-1].Term,
+			}
+			reply := RequestVoteReply{}
+			rf.sendRequestVote(i, &args, &reply)
+			//log.Printf("Server %d received RequestVoteReply from %d", rf.me, i)
+			//log.Printf("VoteGranted: %t", reply.VoteGranted)
+			if reply.VoteGranted {
+				rf.votesReceived += 1
+			}
+		}
+		if rf.votesReceived > len(rf.peers)/2 {
+			log.Printf("Server %d is now the leader", rf.me)
+			rf.state = "LEADER"
+		}
+	}
+}
+
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 
@@ -308,64 +342,40 @@ func (rf *Raft) ticker() {
 		if rf.state == "FOLLOWER" || rf.state == "CANDIDATE" {
 			// check if we need to start an election
 			elapsed := time.Since(rf.lastHeartbeat)
+			log.Printf("Server %d elapsed time: %v", rf.me, elapsed)
 			if elapsed >= rf.electionTimeout {
-				log.Printf("Server %d is starting an election", rf.me)
-				log.Printf("electionTimeout %v, elapsed %v", rf.electionTimeout, elapsed)
-				rf.mu.Lock()
-				rf.state = "CANDIDATE"
-				rf.currentTerm += 1
-				rf.votedFor = rf.me
-				rf.votesReceived = 1
-				rf.mu.Unlock()
-				// send out request vote messages
-
-				for i := 0; i < len(rf.peers); i++ {
-					rf.mu.Lock()
-					if i != rf.me {
-						args := RequestVoteArgs{
-							Term:        rf.currentTerm,
-							CandidateId: rf.me,
-							//LastLogIndex: len(rf.log),
-							//	LastLogTerm:  rf.log[len(rf.log)-1].Term,
-						}
-						reply := RequestVoteReply{}
-						rf.sendRequestVote(i, &args, &reply)
-						//log.Printf("Server %d received RequestVoteReply from %d", rf.me, i)
-						//log.Printf("VoteGranted: %t", reply.VoteGranted)
-						if reply.VoteGranted {
-							rf.votesReceived += 1
-						}
-					}
-					if rf.votesReceived > len(rf.peers)/2 {
-						log.Printf("Server %d is now the leader", rf.me)
-						rf.state = "LEADER"
-					}
-					rf.mu.Unlock()
-				}
+				rf.startElection()
 			}
 		}
 		if rf.state == "LEADER" {
-			go func() {
+			rf.sendHeartbeats()
 
-				for {
-					if rf.state != "LEADER" {
-						break
-					}
-
-					for i := 0; i < len(rf.peers); i++ {
-						if i != rf.me {
-							//log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
-							rf.sendAppendEntries(i)
-						}
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
-			}()
-
-			ms := 150 + (rand.Int63() % 300)
-			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
+		ms := 150 + (rand.Int63() % 300)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
+}
+
+func (rf *Raft) sendHeartbeats() {
+
+	go func() {
+		for {
+			if rf.dead == 1 {
+				return
+			}
+			if rf.state != "LEADER" {
+				break
+			}
+
+			for i := 0; i < len(rf.peers); i++ {
+				if i != rf.me {
+					//log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
+					rf.sendAppendEntries(i)
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
 }
 
 // the service or tester wants to create a Raft server. the ports
