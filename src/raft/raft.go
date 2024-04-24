@@ -172,7 +172,7 @@ func (rf *Raft) sendAppendEntries(server int) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("Server %d received AppendEntries from %d, term %d, currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+	//log.Printf("Server %d received AppendEntries from %d, term %d, currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -183,7 +183,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.currentTerm = args.Term
 	reply.Success = true
 	reply.Term = rf.currentTerm
-	log.Printf("AppendEntriesReply: server %d, %v", rf.me, reply)
+	//log.Printf("AppendEntriesReply: server %d, %v", rf.me, reply)
 }
 
 // example RequestVote RPC arguments structure.
@@ -310,6 +310,7 @@ func (rf *Raft) ticker() {
 			elapsed := time.Since(rf.lastHeartbeat)
 			if elapsed >= rf.electionTimeout {
 				log.Printf("Server %d is starting an election", rf.me)
+				log.Printf("electionTimeout %v, elapsed %v", rf.electionTimeout, elapsed)
 				rf.mu.Lock()
 				rf.state = "CANDIDATE"
 				rf.currentTerm += 1
@@ -344,18 +345,26 @@ func (rf *Raft) ticker() {
 			}
 		}
 		if rf.state == "LEADER" {
-			rf.mu.Lock()
-			for i := 0; i < len(rf.peers); i++ {
-				if i != rf.me {
-					log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
-					rf.sendAppendEntries(i)
-				}
-			}
-			rf.mu.Unlock()
-		}
+			go func() {
 
-		ms := 150 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+				for {
+					if rf.state != "LEADER" {
+						break
+					}
+
+					for i := 0; i < len(rf.peers); i++ {
+						if i != rf.me {
+							//log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
+							rf.sendAppendEntries(i)
+						}
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+			}()
+
+			ms := 150 + (rand.Int63() % 300)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
 	}
 }
 
