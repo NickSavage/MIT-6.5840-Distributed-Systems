@@ -50,11 +50,6 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type LogEntry struct {
-	Term  int
-	Index int
-}
-
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -70,7 +65,7 @@ type Raft struct {
 	state       string
 	currentTerm int
 	votedFor    int
-	log         []LogEntry
+	log         []ApplyMsg
 	commitIndex int
 	lastApplied int
 	nextIndex   []int
@@ -155,7 +150,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []LogEntry
+	Entries      []ApplyMsg
 	LeaderCommit int
 }
 
@@ -164,6 +159,27 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+func (rf *Raft) sendHeartbeats() {
+
+	go func() {
+		for {
+			if rf.dead == 1 {
+				return
+			}
+			if rf.state != "LEADER" {
+				break
+			}
+
+			for i := 0; i < len(rf.peers); i++ {
+				if i != rf.me {
+					//log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
+					rf.sendAppendEntries(i)
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+}
 func (rf *Raft) sendAppendEntries(server int) {
 
 	args := AppendEntriesArgs{
@@ -215,9 +231,9 @@ type RequestVoteReply struct {
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	log.Printf("Server %d received RequestVote from %d", rf.me, args.CandidateId)
-	log.Printf("Server %d currentTerm: %d, args.Term: %d", rf.me, rf.currentTerm, args.Term)
-	log.Printf("Server %d votedFor: %d", rf.me, rf.votedFor)
+	//	log.Printf("Server %d received RequestVote from %d", rf.me, args.CandidateId)
+	//log.Printf("Server %d currentTerm: %d, args.Term: %d", rf.me, rf.currentTerm, args.Term)
+	//log.Printf("Server %d votedFor: %d", rf.me, rf.votedFor)
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -268,7 +284,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	log.Printf("Server %d sending RequestVote to %d", rf.me, server)
+	//log.Printf("Server %d sending RequestVote to %d", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -292,6 +308,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (3B).
 
+	if !rf.killed() {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.state != "LEADER" {
+			isLeader = false
+		}
+		term = rf.currentTerm
+	}
+
+	log.Printf("command: %v", command)
+	log.Printf("Start: Server %d is the leader: %v, term %v", rf.me, isLeader, term)
 	return index, term, isLeader
 }
 
@@ -343,8 +370,8 @@ func (rf *Raft) startElection() {
 
 				//	log.Printf("Server %d sending RequestVote to %d", rf.me, x)
 				rf.sendRequestVote(x, &args, &reply)
-				log.Printf("Server %d received RequestVoteReply from %d", rf.me, x)
-				log.Printf("VoteGranted: %t", reply.VoteGranted)
+				//log.Printf("Server %d received RequestVoteReply from %d", rf.me, x)
+				//log.Printf("VoteGranted: %t", reply.VoteGranted)
 
 				rf.mu.Lock()
 				if reply.VoteGranted && rf.state == "CANDIDATE" && rf.currentTerm == args.Term {
@@ -372,7 +399,7 @@ func (rf *Raft) ticker() {
 		if rf.state == "FOLLOWER" || rf.state == "CANDIDATE" {
 			// check if we need to start an election
 			elapsed := time.Since(rf.lastHeartbeat)
-			log.Printf("Server %d elapsed time: %v", rf.me, elapsed)
+			//log.Printf("Server %d elapsed time: %v", rf.me, elapsed)
 			if elapsed >= rf.electionTimeout {
 				rf.startElection()
 			}
@@ -386,28 +413,6 @@ func (rf *Raft) ticker() {
 		ms := 300 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
-}
-
-func (rf *Raft) sendHeartbeats() {
-
-	go func() {
-		for {
-			if rf.dead == 1 {
-				return
-			}
-			if rf.state != "LEADER" {
-				break
-			}
-
-			for i := 0; i < len(rf.peers); i++ {
-				if i != rf.me {
-					//log.Printf("Server %d sending AppendEntries to %d", rf.me, i)
-					rf.sendAppendEntries(i)
-				}
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	}()
 }
 
 // the service or tester wants to create a Raft server. the ports
