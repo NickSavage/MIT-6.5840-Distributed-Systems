@@ -207,7 +207,9 @@ type RequestVoteReply struct {
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	//log.Printf("Server %d received RequestVote from %d", rf.me, args.CandidateId)
+	log.Printf("Server %d received RequestVote from %d", rf.me, args.CandidateId)
+	log.Printf("Server %d currentTerm: %d, args.Term: %d", rf.me, rf.currentTerm, args.Term)
+	log.Printf("Server %d votedFor: %d", rf.me, rf.votedFor)
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -253,7 +255,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	//log.Printf("Server %d sending RequestVote to %d", rf.me, server)
+	log.Printf("Server %d sending RequestVote to %d", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -300,36 +302,48 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) startElection() {
-
 	log.Printf("Server %d is starting an election", rf.me)
 	rf.mu.Lock()
 	rf.state = "CANDIDATE"
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 	rf.votesReceived = 1
+	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
 
+	var wg sync.WaitGroup
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
-			args := RequestVoteArgs{
-				Term:        rf.currentTerm,
-				CandidateId: rf.me,
-				//LastLogIndex: len(rf.log),
-				//	LastLogTerm:  rf.log[len(rf.log)-1].Term,
-			}
-			reply := RequestVoteReply{}
-			rf.sendRequestVote(i, &args, &reply)
-			//log.Printf("Server %d received RequestVoteReply from %d", rf.me, i)
-			//log.Printf("VoteGranted: %t", reply.VoteGranted)
-			if reply.VoteGranted {
-				rf.votesReceived += 1
-			}
-		}
-		if rf.votesReceived > len(rf.peers)/2 {
-			log.Printf("Server %d is now the leader", rf.me)
-			rf.state = "LEADER"
+			wg.Add(1)
+			go func(x int) {
+				defer wg.Done()
+
+				args := RequestVoteArgs{
+					Term:        currentTerm,
+					CandidateId: rf.me,
+					// LastLogIndex and LastLogTerm should be initialized here if you have implemented log replication
+				}
+				reply := RequestVoteReply{}
+
+				log.Printf("Server %d sending RequestVote to %d", rf.me, x)
+				rf.sendRequestVote(x, &args, &reply)
+				log.Printf("Server %d received RequestVoteReply from %d", rf.me, x)
+				log.Printf("VoteGranted: %t", reply.VoteGranted)
+
+				rf.mu.Lock()
+				if reply.VoteGranted && rf.state == "CANDIDATE" && rf.currentTerm == args.Term {
+					rf.votesReceived++
+					if rf.votesReceived > len(rf.peers)/2 {
+						log.Printf("Server %d is now the leader", rf.me)
+						rf.state = "LEADER"
+						// Additional code to handle transition to leader, e.g., sending initial empty AppendEntries to all followers
+					}
+				}
+				rf.mu.Unlock()
+			}(i)
 		}
 	}
+	wg.Wait() // Correct placement of wg.Wait(), outside the for-loop
 }
 
 func (rf *Raft) ticker() {
