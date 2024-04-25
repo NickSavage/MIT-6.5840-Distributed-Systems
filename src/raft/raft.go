@@ -89,8 +89,16 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (3A).
 
-	isleader = rf.state == "LEADER"
-	term = rf.currentTerm
+	if !rf.killed() {
+
+		rf.mu.Lock()
+		isleader = rf.state == "LEADER"
+		term = rf.currentTerm
+		rf.mu.Unlock()
+	} else {
+		term = -1
+		isleader = false
+	}
 	log.Printf("Server %d is the leader: %v, term %v", rf.me, isleader, term)
 	return term, isleader
 }
@@ -218,6 +226,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = "FOLLOWER"
+	}
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		// something about candidates log being up to date here too
 		reply.Term = rf.currentTerm
@@ -294,6 +307,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.mu.Lock()
+	rf.state = "DEAD"
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) killed() bool {
@@ -325,7 +341,7 @@ func (rf *Raft) startElection() {
 				}
 				reply := RequestVoteReply{}
 
-				log.Printf("Server %d sending RequestVote to %d", rf.me, x)
+				//	log.Printf("Server %d sending RequestVote to %d", rf.me, x)
 				rf.sendRequestVote(x, &args, &reply)
 				log.Printf("Server %d received RequestVoteReply from %d", rf.me, x)
 				log.Printf("VoteGranted: %t", reply.VoteGranted)
@@ -361,11 +377,13 @@ func (rf *Raft) ticker() {
 				rf.startElection()
 			}
 		}
+		rf.mu.Lock()
 		if rf.state == "LEADER" {
 			rf.sendHeartbeats()
 
 		}
-		ms := 150 + (rand.Int63() % 300)
+		rf.mu.Unlock()
+		ms := 300 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -412,7 +430,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.state = "FOLLOWER"
 	rf.currentTerm = 0
 	rf.lastHeartbeat = time.Now()
-	rf.electionTimeout = time.Duration(150+(rand.Int63()%300)) * time.Millisecond
+	rf.electionTimeout = time.Duration(300+(rand.Int63()%300)) * time.Millisecond
 	rf.votedFor = -1
 
 	// initialize from state persisted before a crash
