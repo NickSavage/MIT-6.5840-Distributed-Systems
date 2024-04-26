@@ -357,10 +357,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	newMessage := ApplyMsg{
 		Command:      command,
 		CommandIndex: newIndex,
-		CommandValid: false,
+		CommandValid: true,
 	}
+
+	logEntry := LogEntry{
+		Command: newMessage,
+		Term:    term,
+	}
+	rf.logs = append(rf.logs, logEntry)
+	rf.commitIndex = newIndex
+
 	var wg sync.WaitGroup
 	committed := 1
+	log.Printf("peers %v, committed %v", rf.peers, committed)
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
@@ -371,21 +380,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 				if ok {
 					committed++
+					log.Printf("Server %d received success from %d", rf.me, x)
 				}
-
 			}(i)
 		}
 	}
 	wg.Wait()
-	if committed >= len(rf.peers)/2 {
-		newMessage.CommandValid = true
-		logEntry := LogEntry{
-			Command: newMessage,
-			Term:    term,
-		}
-		rf.logs = append(rf.logs, logEntry)
-		rf.commitIndex = newIndex
-
+	log.Printf("peers %v, committed %v, what %v", rf.peers, committed, committed >= len(rf.peers)/2)
+	if committed > len(rf.peers)/2 {
+		log.Printf("Server %d committed %v", rf.me, newMessage)
 		rf.applyCh <- newMessage
 	}
 
