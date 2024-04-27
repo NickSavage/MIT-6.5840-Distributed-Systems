@@ -214,6 +214,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+	if args.PrevLogIndex >= 0 && args.PrevLogIndex > len(rf.logs) && rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		return
+	}
 	rf.lastHeartbeat = time.Now()
 	rf.state = "FOLLOWER"
 	rf.votedFor = -1
@@ -223,18 +227,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// update each args.Entries to have CommandValid = true
-	for i := 0; i < len(args.Entries); i++ {
-		args.Entries[i].CommandValid = true
+	// delete conflicting entries
+	nextIndex := args.PrevLogIndex + 1
+	if nextIndex < len(rf.logs) {
+		if rf.logs[nextIndex].Term != args.Term {
+			rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
+		}
 	}
 
-	logEntry := LogEntry{
-		Command: args.Entries[0],
-		Term:    args.Term,
-	}
+	// Append new entries not already in the log
+	for _, entry := range args.Entries {
+		logEntry := LogEntry{
+			Command: entry,
+			Term:    args.Term,
+		}
 
-	rf.logs = append(rf.logs, logEntry)
-	rf.applyCh <- args.Entries[0]
+		if nextIndex >= len(rf.logs) {
+			rf.logs = append(rf.logs, logEntry)
+			rf.applyCh <- entry
+		} else {
+			// If already the same log exists, no need to append
+			if rf.logs[nextIndex].Term != args.Term {
+				rf.logs[nextIndex] = logEntry
+			}
+		}
+		nextIndex++
+	}
 	if args.LeaderCommit > rf.commitIndex {
 		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
 		rf.commitIndex = args.LeaderCommit
@@ -351,7 +369,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Unlock()
 	log.Printf("command: %v", command)
-	log.Printf("Start: Server %d is the leader: %v, term %v", rf.me, isLeader, term)
+	//log.Printf("Start: Server %d is the leader: %v, term %v", rf.me, isLeader, term)
 
 	newIndex := index + 1
 	newMessage := ApplyMsg{
@@ -386,7 +404,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 	}
 	wg.Wait()
-	log.Printf("peers %v, committed %v, what %v", rf.peers, committed, committed >= len(rf.peers)/2)
 	if committed > len(rf.peers)/2 {
 		log.Printf("Server %d committed %v", rf.me, newMessage)
 		rf.applyCh <- newMessage
