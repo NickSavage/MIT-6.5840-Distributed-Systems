@@ -51,7 +51,7 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct {
-	Command interface{}
+	Command ApplyMsg
 	Term    int
 }
 
@@ -186,8 +186,22 @@ func (rf *Raft) sendHeartbeats() {
 		}
 	}()
 }
-func (rf *Raft) sendAppendEntries(server int, entries []ApplyMsg) bool {
+func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 
+	lastIndex := len(rf.logs) - 1
+
+	// make an empty array to store entries to send
+	entries := make([]ApplyMsg, 0)
+
+	log.Printf("lastIndex: %d, server nextIndex: %d", lastIndex, rf.nextIndex[server])
+	if lastIndex > rf.nextIndex[server] {
+		missingEntries := rf.logs[rf.nextIndex[server]:]
+		for _, entry := range missingEntries {
+			entries = append(entries, entry.Command)
+		}
+	}
+	entries = append(entries, newEntries...)
+	//log.Printf("entries: %v", entries)
 	rf.mu.Lock()
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -197,24 +211,28 @@ func (rf *Raft) sendAppendEntries(server int, entries []ApplyMsg) bool {
 		Entries:      entries,
 		LeaderCommit: rf.commitIndex,
 	}
-	//log.Printf("Server %d sending %v AppendEntries to %d", rf.me, args, server)
 	rf.mu.Unlock()
 	reply := AppendEntriesReply{}
 	rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+	if reply.Success {
+		rf.mu.Lock()
+		rf.matchIndex[server] = len(rf.logs) - 1
+		rf.nextIndex[server] = len(rf.logs)
+		rf.mu.Unlock()
+	}
 	return reply.Success
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//log.Printf("Server %d received AppendEntries from %d, term %d, currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		log.Printf("Returning reply of %v to %d", reply.Success, args.LeaderId)
 		reply.Success = false
 		return
 	}
-	if args.PrevLogIndex >= 0 && args.PrevLogIndex > len(rf.logs) && rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if len(rf.logs) < args.PrevLogIndex {
 		reply.Success = false
 		return
 	}
@@ -258,6 +276,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.commitIndex = args.LeaderCommit
 	}
 	reply.Success = true
+	log.Printf("Server %d logs: %v", rf.me, rf.logs)
 }
 
 // example RequestVote RPC arguments structure.
@@ -280,9 +299,6 @@ type RequestVoteReply struct {
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	//	log.Printf("Server %d received RequestVote from %d", rf.me, args.CandidateId)
-	//log.Printf("Server %d currentTerm: %d, args.Term: %d", rf.me, rf.currentTerm, args.Term)
-	//log.Printf("Server %d votedFor: %d", rf.me, rf.votedFor)
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -333,7 +349,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	//log.Printf("Server %d sending RequestVote to %d", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -369,7 +384,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.mu.Unlock()
 	log.Printf("command: %v", command)
-	//log.Printf("Start: Server %d is the leader: %v, term %v", rf.me, isLeader, term)
 
 	newIndex := index + 1
 	newMessage := ApplyMsg{
@@ -531,11 +545,14 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
+	rf.nextIndex = make([]int, len(peers))
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = 1
+	}
+	rf.matchIndex = make([]int, len(peers))
+
 	rf.logs = make([]LogEntry, 0)
 	rf.logs = append(rf.logs, LogEntry{Command: ApplyMsg{CommandValid: false}, Term: 0})
-	rf.mu.Lock()
-	//applyCh <- ApplyMsg{CommandValid: true}
-	rf.mu.Unlock()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
