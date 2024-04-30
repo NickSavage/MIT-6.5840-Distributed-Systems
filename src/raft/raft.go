@@ -210,8 +210,8 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: len(rf.logs) - 1,
-			PrevLogTerm:  0,
+			PrevLogIndex: lastIndex,
+			PrevLogTerm:  rf.logs[lastIndex].Term,
 			Entries:      entries,
 			LeaderCommit: rf.commitIndex,
 		}
@@ -222,6 +222,7 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 		log.Printf("server %d term: %d, reply term from %d: %d", rf.me, rf.currentTerm, server, reply.Term)
 		if !reply.Success {
 			if reply.Term > rf.currentTerm {
+				log.Printf("Server %d needs to step down", rf.me)
 				rf.mu.Lock()
 				rf.currentTerm = reply.Term
 				rf.state = "FOLLOWER"
@@ -244,18 +245,16 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 			break
 		}
 		// if lastIndex >= nextIndex, we have an inconsistency, otherwise we're dealing with heartbeats
-		if lastIndex >= rf.nextIndex[server] {
-			rf.mu.Lock()
-			if rf.nextIndex[server] > 0 {
-				rf.nextIndex[server]--
-			}
-			rf.mu.Unlock()
-		} else {
-			break
+		log.Printf("server %d: lastIndex: %d, rf.nextIndex: %d", server, lastIndex, rf.nextIndex[server])
+		rf.mu.Lock()
+		if lastIndex > 0 {
+			lastIndex--
+			rf.nextIndex[server] = lastIndex
 		}
+		rf.mu.Unlock()
 
 		log.Printf("Log inconsistency with server %d, we're going to try again", server)
-		time.Sleep(100 * time.Millisecond)
+		//		time.Sleep(100 * time.Millisecond)
 	}
 	return result
 }
@@ -532,6 +531,7 @@ func (rf *Raft) startElection() {
 				}
 				if rf.votesReceived > len(rf.peers)/2 {
 					log.Printf("Server %d is now the leader", rf.me)
+					log.Printf("term: %d", rf.currentTerm)
 					rf.state = "LEADER"
 					// Additional code to handle transition to leader, e.g., sending initial empty AppendEntries to all followers
 					for i := 0; i < len(rf.peers); i++ {
@@ -553,12 +553,7 @@ func (rf *Raft) startElection() {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 
-		// Your code here (3A)
-		// Check if a leader election should be started.
-
-		// check if we need to start an election
 		if rf.state == "FOLLOWER" || rf.state == "CANDIDATE" {
-			// check if we need to start an election
 			elapsed := time.Since(rf.lastHeartbeat)
 			//log.Printf("Server %d elapsed time: %v", rf.me, elapsed)
 			if elapsed >= rf.electionTimeout {
