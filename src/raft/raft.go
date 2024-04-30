@@ -189,8 +189,6 @@ func (rf *Raft) sendHeartbeats() {
 func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 
 	lastIndex := len(rf.logs) - 1
-	maxRetries := 3
-	retryCount := 0
 
 	// make an empty array to store entries to send
 	entries := make([]ApplyMsg, 0)
@@ -222,10 +220,20 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 		rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 		log.Printf("Server %d received reply from %d with success: %v", rf.me, server, reply.Success)
 		log.Printf("server %d term: %d, reply term from %d: %d", rf.me, rf.currentTerm, server, reply.Term)
-		if !reply.Success && reply.Term == 0 {
-			// I think the call has failed here
-			log.Printf("Server %d hasn't responded", server)
-			break
+		if !reply.Success {
+			if reply.Term > rf.currentTerm {
+				rf.mu.Lock()
+				rf.currentTerm = reply.Term
+				rf.state = "FOLLOWER"
+				rf.votedFor = -1
+				rf.mu.Unlock()
+				break
+			}
+			if reply.Term == 0 {
+				// I think the call has failed here
+				log.Printf("Server %d hasn't responded", server)
+				break
+			}
 		}
 		if reply.Success {
 			rf.mu.Lock()
@@ -248,10 +256,6 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 
 		log.Printf("Log inconsistency with server %d, we're going to try again", server)
 		time.Sleep(100 * time.Millisecond)
-		retryCount++
-		if retryCount >= maxRetries {
-			break
-		}
 	}
 	return result
 }
@@ -271,7 +275,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
-	//log.Printf("server %d: len(rf.logs): %d, args.PrevLogIndex: %d", rf.me, len(rf.logs), args.PrevLogIndex)
+	log.Printf("server %d: len(rf.logs): %d, args.PrevLogIndex: %d", rf.me, len(rf.logs), args.PrevLogIndex)
 	if len(rf.logs) < args.PrevLogIndex {
 		//log.Printf("our logs are less than the leader's logs")
 		reply.Success = false
@@ -345,9 +349,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	reply.VoteGranted = false
+	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
 		return
 	}
 	if args.Term > rf.currentTerm {
@@ -357,10 +361,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		// something about candidates log being up to date here too
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
-		return
+		log.Printf("Server %d: len(rf.logs): %d, args.LastLogIndex: %d", rf.me, len(rf.logs), args.LastLogIndex)
+		if args.LastLogIndex+1 >= len(rf.logs) {
+			reply.Term = rf.currentTerm
+			reply.VoteGranted = true
+			rf.votedFor = args.CandidateId
+			return
+		}
 	}
 }
 
@@ -426,7 +433,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	rf.mu.Unlock()
-	log.Printf("command: %v", command)
+	log.Printf("server %d: command: %v", rf.me, command)
 
 	newIndex := index + 1
 	newMessage := ApplyMsg{
@@ -450,22 +457,21 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go func(x int) {
+					log.Printf("Server %d sending AppendEntries to %d", rf.me, x)
 					ok := rf.sendAppendEntries(x, []ApplyMsg{newMessage})
 
+					log.Printf("Server %d received reply from %d with success: %v", rf.me, x, ok)
 					if ok {
 						rf.mu.Lock()
 						committed++
 						rf.mu.Unlock()
 						log.Printf("Server %d received success from %d", rf.me, x)
 					}
+					if committed > len(rf.peers)/2 {
+						log.Printf("Server %d committed %v", rf.me, newMessage)
+						rf.applyCh <- newMessage
+					}
 				}(i)
-			}
-			for {
-				if committed > len(rf.peers)/2 {
-					log.Printf("Server %d committed %v", rf.me, newMessage)
-					rf.applyCh <- newMessage
-					break
-				}
 			}
 		}
 	}()
@@ -508,9 +514,10 @@ func (rf *Raft) startElection() {
 		if i != rf.me {
 			go func(x int) {
 				args := RequestVoteArgs{
-					Term:        currentTerm,
-					CandidateId: rf.me,
-					// LastLogIndex and LastLogTerm should be initialized here if you have implemented log replication
+					Term:         currentTerm,
+					CandidateId:  rf.me,
+					LastLogIndex: len(rf.logs) - 1,
+					LastLogTerm:  rf.logs[len(rf.logs)-1].Term,
 				}
 				reply := RequestVoteReply{}
 
