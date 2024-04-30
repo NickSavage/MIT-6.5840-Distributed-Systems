@@ -182,7 +182,7 @@ func (rf *Raft) sendHeartbeats() {
 					go rf.sendAppendEntries(i, []ApplyMsg{})
 				}
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 		}
 	}()
 }
@@ -195,14 +195,19 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 	var result bool
 
 	for {
+		log.Printf("server %d: sending Append Entries to %d", rf.me, server)
 		//log.Printf("server %d: lastIndex: %d, nextIndex: %d", server, lastIndex, rf.nextIndex[server])
-		if lastIndex > rf.nextIndex[server] {
-			missingEntries := rf.logs[rf.nextIndex[server]:]
-			for _, entry := range missingEntries {
-				entries = append(entries, entry.Command)
+
+		// if newEntries is 0, its a heartbeat and we don't want to do this
+		if len(newEntries) > 0 {
+			if lastIndex > rf.nextIndex[server] {
+				missingEntries := rf.logs[rf.nextIndex[server]:]
+				for _, entry := range missingEntries {
+					entries = append(entries, entry.Command)
+				}
 			}
+			entries = append(entries, newEntries...)
 		}
-		entries = append(entries, newEntries...)
 		if len(entries) != 0 {
 			log.Printf("server %d for %d: len(entries): %v, new entries: %v", rf.me, server, len(entries), entries)
 		}
@@ -235,6 +240,15 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 				log.Printf("Server %d hasn't responded", server)
 				break
 			}
+			// if lastIndex >= nextIndex, we have an inconsistency, otherwise we're dealing with heartbeats
+			log.Printf("server %d: lastIndex: %d, rf.nextIndex: %d", server, lastIndex, rf.nextIndex[server])
+			rf.mu.Lock()
+			if lastIndex > 0 {
+				lastIndex--
+				rf.nextIndex[server] = lastIndex
+			}
+			rf.mu.Unlock()
+			log.Printf("Log inconsistency with server %d, we're going to try again", server)
 		}
 		if reply.Success {
 			rf.mu.Lock()
@@ -244,17 +258,6 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 			result = reply.Success
 			break
 		}
-		// if lastIndex >= nextIndex, we have an inconsistency, otherwise we're dealing with heartbeats
-		log.Printf("server %d: lastIndex: %d, rf.nextIndex: %d", server, lastIndex, rf.nextIndex[server])
-		rf.mu.Lock()
-		if lastIndex > 0 {
-			lastIndex--
-			rf.nextIndex[server] = lastIndex
-		}
-		rf.mu.Unlock()
-
-		log.Printf("Log inconsistency with server %d, we're going to try again", server)
-		//		time.Sleep(100 * time.Millisecond)
 	}
 	return result
 }
@@ -529,9 +532,11 @@ func (rf *Raft) startElection() {
 				if reply.VoteGranted && rf.state == "CANDIDATE" && rf.currentTerm == args.Term {
 					rf.votesReceived++
 				}
+				rf.mu.Unlock()
 				if rf.votesReceived > len(rf.peers)/2 {
 					log.Printf("Server %d is now the leader", rf.me)
 					log.Printf("term: %d", rf.currentTerm)
+					rf.mu.Lock()
 					rf.state = "LEADER"
 					// Additional code to handle transition to leader, e.g., sending initial empty AppendEntries to all followers
 					for i := 0; i < len(rf.peers); i++ {
@@ -540,11 +545,11 @@ func (rf *Raft) startElection() {
 							rf.matchIndex[i] = 0
 						}
 					}
+					rf.mu.Unlock()
 					if rf.state == "LEADER" {
 						rf.sendHeartbeats()
 					}
 				}
-				rf.mu.Unlock()
 			}(i)
 		}
 	}
