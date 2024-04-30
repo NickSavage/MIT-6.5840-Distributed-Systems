@@ -178,7 +178,7 @@ func (rf *Raft) sendHeartbeats() {
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					//log.Printf("server %d sent heartbeat to %d", rf.me, i)
+					log.Printf("server %d sent heartbeat to %d", rf.me, i)
 					go rf.sendAppendEntries(i, []ApplyMsg{})
 				}
 			}
@@ -293,7 +293,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
 		}
 	}
-	//log.Printf("do we get here?")
+	log.Printf("do we get here?")
 	// Append new entries not already in the log
 	for _, entry := range args.Entries {
 		logEntry := LogEntry{
@@ -301,6 +301,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			Term:    args.Term,
 		}
 
+		log.Printf("nextIndex: %d, len(rf.logs): %d", nextIndex, len(rf.logs))
 		if nextIndex >= len(rf.logs) {
 			rf.logs = append(rf.logs, logEntry)
 			rf.applyCh <- entry
@@ -312,7 +313,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		nextIndex++
 	}
-	//	log.Printf("what about here?")
+	log.Printf("what about here?")
 	if args.LeaderCommit > rf.commitIndex {
 		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
 		rf.commitIndex = args.LeaderCommit
@@ -441,35 +442,33 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, logEntry)
 	rf.commitIndex = newIndex
 
-	//	var wg sync.WaitGroup
-	committed := 1
-	log.Printf("peers %v, committed %v", rf.peers, committed)
+	go func() {
 
-	for i := 0; i < len(rf.peers); i++ {
-		if i != rf.me {
-			//			wg.Add(1)
-			go func(x int) {
-				//		defer wg.Done()
-				ok := rf.sendAppendEntries(x, []ApplyMsg{newMessage})
+		committed := 1
+		log.Printf("peers %v, committed %v", rf.peers, committed)
 
-				if ok {
-					rf.mu.Lock()
-					committed++
-					rf.mu.Unlock()
-					log.Printf("Server %d received success from %d", rf.me, x)
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				go func(x int) {
+					ok := rf.sendAppendEntries(x, []ApplyMsg{newMessage})
+
+					if ok {
+						rf.mu.Lock()
+						committed++
+						rf.mu.Unlock()
+						log.Printf("Server %d received success from %d", rf.me, x)
+					}
+				}(i)
+			}
+			for {
+				if committed > len(rf.peers)/2 {
+					log.Printf("Server %d committed %v", rf.me, newMessage)
+					rf.applyCh <- newMessage
+					break
 				}
-			}(i)
+			}
 		}
-	}
-	//	wg.Wait()
-	for {
-		if committed > len(rf.peers)/2 {
-			log.Printf("Server %d committed %v", rf.me, newMessage)
-			rf.applyCh <- newMessage
-			break
-		}
-	}
-
+	}()
 	return rf.commitIndex, term, isLeader
 }
 
