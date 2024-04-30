@@ -8,12 +8,15 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"log"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -217,6 +220,9 @@ func TestFollowerFailure3B(t *testing.T) {
 
 	// check that command 104 did not commit.
 	n, _ := cfg.nCommitted(index)
+	log.Printf("asdfasdf")
+	log.Printf("n: %v", n)
+
 	if n > 0 {
 		t.Fatalf("%v committed but no majority", n)
 	}
