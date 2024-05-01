@@ -235,6 +235,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
 	rf.votesReceived = 1
+	rf.lastHeartbeat = time.Now()
 	currentTerm := rf.currentTerm
 	rf.mu.Unlock()
 
@@ -256,7 +257,7 @@ func (rf *Raft) startElection() {
 					rf.votesReceived++
 				}
 				rf.mu.Unlock()
-				if rf.votesReceived > len(rf.peers)/2 {
+				if rf.state == "CANDIDATE" && rf.votesReceived > len(rf.peers)/2 {
 					log.Printf("Server %d is now the leader", rf.me)
 					log.Printf("term: %d", rf.currentTerm)
 					rf.mu.Lock()
@@ -374,7 +375,7 @@ func (rf *Raft) sendHeartbeats() {
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					log.Printf("server %d sent heartbeat to %d", rf.me, i)
+					//					log.Printf("server %d sent heartbeat to %d", rf.me, i)
 					go rf.sendAppendEntries(i, []ApplyMsg{})
 				}
 			}
