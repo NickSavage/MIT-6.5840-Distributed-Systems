@@ -342,7 +342,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 	}
 	rf.logs = append(rf.logs, logEntry)
-	rf.commitIndex = newIndex
 
 	go func() {
 
@@ -351,20 +350,29 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go func(x int) {
+					//log.Printf("server %d: sent append entries to %d", rf.me, x)
 					ok := rf.sendAppendEntries(x, false)
+					//log.Printf("server %d: response from %d: %v", rf.me, x, ok)
 					if ok {
 						rf.mu.Lock()
 						committed++
 						rf.mu.Unlock()
 					}
 					if committed > len(rf.peers)/2 {
-						rf.applyCh <- newMessage
+						//log.Printf("server %d: committed: %d", rf.me, committed)
+						if rf.commitIndex < newIndex {
+							//log.Printf("bumping commit index from %d to %d", rf.commitIndex, newIndex)
+							rf.mu.Lock()
+							rf.commitIndex = newIndex
+							rf.mu.Unlock()
+							rf.applyCh <- newMessage
+						}
 					}
 				}(i)
 			}
 		}
 	}()
-	return rf.commitIndex, term, isLeader
+	return newIndex, term, isLeader
 }
 
 func (rf *Raft) sendHeartbeats() {
@@ -380,7 +388,7 @@ func (rf *Raft) sendHeartbeats() {
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					//					log.Printf("server %d sent heartbeat to %d", rf.me, i)
+					log.Printf("server %d sent heartbeat to %d", rf.me, i)
 					go rf.sendAppendEntries(i, true)
 				}
 			}
@@ -398,10 +406,8 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 	for {
 		entries := make([]ApplyMsg, 0)
 		if !heartbeat {
-			log.Printf("Server %d: lastIndex: %d, rf.nextIndex[server]: %d", rf.me, lastIndex, rf.nextIndex[server])
 			if lastIndex >= rf.nextIndex[server] {
 				missingEntries := rf.logs[rf.nextIndex[server]:]
-				log.Printf("missing entries: %v", missingEntries)
 				for _, entry := range missingEntries {
 					entries = append(entries, entry.Command)
 				}
@@ -478,7 +484,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.currentTerm = args.Term
 	if len(args.Entries) == 0 {
 		reply.Success = true
-		return
 	}
 
 	// delete conflicting entries
@@ -497,7 +502,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if nextIndex >= len(rf.logs) {
 			rf.logs = append(rf.logs, logEntry)
-			rf.applyCh <- entry
 		} else {
 			// If already the same log exists, no need to append
 			if rf.logs[nextIndex].Term != args.Term {
@@ -506,8 +510,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		nextIndex++
 	}
+	log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
 	if args.LeaderCommit > rf.commitIndex {
 		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
+		toCommit := args.LeaderCommit
+		if toCommit > len(rf.logs)-1 {
+			toCommit = len(rf.logs) - 1
+		}
+		for i := rf.commitIndex + 1; i <= toCommit; i++ {
+			log.Printf("logs: %v", rf.logs)
+			rf.applyCh <- rf.logs[i].Command
+		}
 		rf.commitIndex = args.LeaderCommit
 	}
 	reply.Success = true
