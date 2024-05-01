@@ -253,6 +253,11 @@ func (rf *Raft) startElection() {
 				rf.sendRequestVote(x, &args, &reply)
 
 				rf.mu.Lock()
+				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+					rf.state = "FOLLOWER"
+					rf.votedFor = -1
+				}
 				if reply.VoteGranted && rf.state == "CANDIDATE" && rf.currentTerm == args.Term {
 					rf.votesReceived++
 				}
@@ -346,7 +351,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go func(x int) {
-					ok := rf.sendAppendEntries(x, []ApplyMsg{newMessage})
+					ok := rf.sendAppendEntries(x, false)
 					if ok {
 						rf.mu.Lock()
 						committed++
@@ -376,14 +381,14 @@ func (rf *Raft) sendHeartbeats() {
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
 					//					log.Printf("server %d sent heartbeat to %d", rf.me, i)
-					go rf.sendAppendEntries(i, []ApplyMsg{})
+					go rf.sendAppendEntries(i, true)
 				}
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
 	}()
 }
-func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
+func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 
 	lastIndex := len(rf.logs) - 1
 
@@ -392,15 +397,15 @@ func (rf *Raft) sendAppendEntries(server int, newEntries []ApplyMsg) bool {
 
 	for {
 		entries := make([]ApplyMsg, 0)
-		// if newEntries is 0, its a heartbeat and we don't want to do this
-		if len(newEntries) > 0 {
-			if lastIndex > rf.nextIndex[server] {
+		if !heartbeat {
+			log.Printf("Server %d: lastIndex: %d, rf.nextIndex[server]: %d", rf.me, lastIndex, rf.nextIndex[server])
+			if lastIndex >= rf.nextIndex[server] {
 				missingEntries := rf.logs[rf.nextIndex[server]:]
+				log.Printf("missing entries: %v", missingEntries)
 				for _, entry := range missingEntries {
 					entries = append(entries, entry.Command)
 				}
 			}
-			entries = append(entries, newEntries...)
 		}
 		rf.mu.Lock()
 		args := AppendEntriesArgs{
@@ -537,6 +542,7 @@ func (rf *Raft) ticker() {
 			elapsed := time.Since(rf.lastHeartbeat)
 			//log.Printf("Server %d elapsed time: %v", rf.me, elapsed)
 			if elapsed >= rf.electionTimeout {
+				// TODO: the paper says something about not calling an election if we've already voted in this term
 				rf.startElection()
 			}
 		}
