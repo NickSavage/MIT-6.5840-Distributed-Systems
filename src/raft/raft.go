@@ -311,7 +311,6 @@ type AppendEntriesReply struct {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	rf.mu.Lock()
 	index := rf.commitIndex
 	term := rf.currentTerm
 	isLeader := true
@@ -323,11 +322,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	if rf.state != "LEADER" {
 		isLeader = false
-		rf.mu.Unlock()
 		return index, term, isLeader
 	}
 
-	rf.mu.Unlock()
+	rf.mu.Lock()
 	log.Printf("server %d: command: %v", rf.me, command)
 
 	newIndex := index + 1
@@ -354,17 +352,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					ok := rf.sendAppendEntries(x, false)
 					//log.Printf("server %d: response from %d: %v", rf.me, x, ok)
 					if ok {
-						rf.mu.Lock()
 						committed++
-						rf.mu.Unlock()
 					}
 					if committed > len(rf.peers)/2 {
 						//log.Printf("server %d: committed: %d", rf.me, committed)
 						if rf.commitIndex < newIndex {
 							//log.Printf("bumping commit index from %d to %d", rf.commitIndex, newIndex)
-							rf.mu.Lock()
 							rf.commitIndex = newIndex
-							rf.mu.Unlock()
+							log.Printf("server %d: committed %v", rf.me, newMessage)
 							rf.applyCh <- newMessage
 						}
 					}
@@ -372,6 +367,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}
 		}
 	}()
+	rf.mu.Unlock()
 	return newIndex, term, isLeader
 }
 
@@ -388,11 +384,11 @@ func (rf *Raft) sendHeartbeats() {
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					log.Printf("server %d sent heartbeat to %d", rf.me, i)
+					//					log.Printf("server %d sent heartbeat to %d", rf.me, i)
 					go rf.sendAppendEntries(i, true)
 				}
 			}
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(150 * time.Millisecond)
 		}
 	}()
 }
@@ -404,6 +400,7 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 	var result bool
 
 	for {
+		rf.mu.Lock()
 		entries := make([]ApplyMsg, 0)
 		if !heartbeat {
 			if lastIndex >= rf.nextIndex[server] {
@@ -412,8 +409,10 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 					entries = append(entries, entry.Command)
 				}
 			}
+
+			log.Printf("server %d: sending entries to %d: %v", rf.me, server, entries)
+			log.Printf("server %d: lastIndex: %d, server %d nextIndex: %d", rf.me, lastIndex, server, rf.nextIndex[server])
 		}
-		rf.mu.Lock()
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
@@ -425,6 +424,9 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 		rf.mu.Unlock()
 		reply := AppendEntriesReply{}
 		rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+		if !heartbeat {
+			log.Printf("server %d: response from %d: %v", rf.me, server, reply.Success)
+		}
 		if !reply.Success {
 			if reply.Term > rf.currentTerm {
 				rf.mu.Lock()
@@ -446,7 +448,7 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 				rf.nextIndex[server] = lastIndex
 			}
 			rf.mu.Unlock()
-			log.Printf("Log inconsistency with server %d, we're going to try again", server)
+			//	log.Printf("Log inconsistency with server %d, we're going to try again", server)
 		}
 		if reply.Success {
 			rf.mu.Lock()
@@ -461,6 +463,7 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	//	log.Printf("server %d: received append entries from %d", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	//log.Printf("is this thing on?")
@@ -470,6 +473,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.state = "FOLLOWER"
 		}
 	}
+	log.Printf("Server %d: args.Term: %d, rf.currentTerm: %d", rf.me, args.Term, rf.currentTerm)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
@@ -486,12 +490,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 	}
 
+	if len(args.Entries) > 0 {
+		log.Printf("server %d: received entries from %d: %v", rf.me, args.LeaderId, args.Entries)
+		log.Printf("server %d: PrevLogIndex: %d, len(rf.logs): %d", rf.me, args.PrevLogIndex, len(rf.logs))
+
+	}
 	// delete conflicting entries
 	nextIndex := args.PrevLogIndex + 1
 	if nextIndex < len(rf.logs) {
-		if rf.logs[nextIndex].Term != args.Term {
-			rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
-		}
+		// if rf.logs[nextIndex].Term != args.Term {
+		rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
+		//}
 	}
 	// Append new entries not already in the log
 	for _, entry := range args.Entries {
@@ -502,6 +511,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if nextIndex >= len(rf.logs) {
 			rf.logs = append(rf.logs, logEntry)
+			rf.lastApplied = len(rf.logs) - 1
+			log.Printf("server %d: appended %v", rf.me, logEntry)
+			log.Printf("server %d: logs: %v", rf.me, rf.logs)
+			log.Printf("server %d: reply to %d: %v", rf.me, args.LeaderId, reply.Success)
 		} else {
 			// If already the same log exists, no need to append
 			if rf.logs[nextIndex].Term != args.Term {
@@ -510,7 +523,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		nextIndex++
 	}
-	log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
+	//	log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
 	if args.LeaderCommit > rf.commitIndex {
 		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
 		toCommit := args.LeaderCommit
@@ -519,11 +532,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		for i := rf.commitIndex + 1; i <= toCommit; i++ {
 			log.Printf("logs: %v", rf.logs)
+			log.Printf("server %d: committing %v", rf.me, rf.logs[i])
 			rf.applyCh <- rf.logs[i].Command
 		}
 		rf.commitIndex = args.LeaderCommit
 	}
+	log.Printf("server %d: s uccess", rf.me)
 	reply.Success = true
+	log.Printf("server %d: reply to %d: %v", rf.me, args.LeaderId, reply.Success)
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
