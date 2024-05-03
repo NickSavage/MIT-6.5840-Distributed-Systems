@@ -187,7 +187,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		// something about candidates log being up to date here too
 		log.Printf("Server %d: len(rf.logs): %d, args.LastLogIndex: %d", rf.me, len(rf.logs), args.LastLogIndex)
-		if args.LastLogIndex+1 >= len(rf.logs) {
+
+		lastLogIndex := len(rf.logs) - 1
+		lastLogTerm := rf.logs[lastLogIndex].Term
+		isLogUpToDate := args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
+
+		if isLogUpToDate {
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
@@ -294,8 +299,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term       int
+	Success    bool
+	NextIndex  int
+	MatchIndex int
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -359,7 +366,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 						if rf.commitIndex < newIndex {
 							//log.Printf("bumping commit index from %d to %d", rf.commitIndex, newIndex)
 							rf.commitIndex = newIndex
-							log.Printf("server %d: committed %v", rf.me, newMessage)
+							log.Printf("server %d: leader committed %v", rf.me, newMessage)
+							log.Printf("server %d: logs: %v", rf.me, rf.logs)
 							rf.applyCh <- newMessage
 						}
 					}
@@ -410,9 +418,10 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 				}
 			}
 
-			log.Printf("server %d: sending entries to %d: %v", rf.me, server, entries)
-			log.Printf("server %d: lastIndex: %d, server %d nextIndex: %d", rf.me, lastIndex, server, rf.nextIndex[server])
 		}
+		log.Printf("server %d: sending entries to %d: %v", rf.me, server, entries)
+		log.Printf("server %d: lastIndex: %d, server %d nextIndex: %d", rf.me, lastIndex, server, rf.nextIndex[server])
+		log.Printf("server %d: received entries from %d: %v", rf.me, server, entries)
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
@@ -423,6 +432,7 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 		}
 		rf.mu.Unlock()
 		reply := AppendEntriesReply{}
+
 		rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 		if !heartbeat {
 			log.Printf("server %d: response from %d: %v", rf.me, server, reply.Success)
@@ -451,9 +461,13 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 			//	log.Printf("Log inconsistency with server %d, we're going to try again", server)
 		}
 		if reply.Success {
+
+			// TODO this is wrong! we're setting nextIndex when we absolutely should not be
+			log.Printf("server %d: setting nextIndex for %d to %d", rf.me, server, len(rf.logs))
+			log.Printf("server %d: heartbeat: %v", rf.me, heartbeat)
 			rf.mu.Lock()
-			rf.matchIndex[server] = len(rf.logs) - 1
-			rf.nextIndex[server] = len(rf.logs)
+			rf.matchIndex[server] = reply.MatchIndex
+			rf.nextIndex[server] = reply.NextIndex
 			rf.mu.Unlock()
 			result = reply.Success
 			break
@@ -463,16 +477,19 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	//	log.Printf("server %d: received append entries from %d", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	//log.Printf("is this thing on?")
 	reply.Term = rf.currentTerm
+	reply.NextIndex = len(rf.logs)
+	reply.MatchIndex = len(rf.logs) - 1
 	if rf.state == "LEADER" {
 		if args.Term > rf.currentTerm {
 			rf.state = "FOLLOWER"
+			rf.votedFor = -1
 		}
 	}
+	log.Printf("server %d: received append entries from %d", rf.me, args.LeaderId)
 	log.Printf("Server %d: args.Term: %d, rf.currentTerm: %d", rf.me, args.Term, rf.currentTerm)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
@@ -483,8 +500,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	rf.lastHeartbeat = time.Now()
-	rf.state = "FOLLOWER"
-	rf.votedFor = -1
 	rf.currentTerm = args.Term
 	if len(args.Entries) == 0 {
 		reply.Success = true
@@ -512,6 +527,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if nextIndex >= len(rf.logs) {
 			rf.logs = append(rf.logs, logEntry)
 			rf.lastApplied = len(rf.logs) - 1
+			reply.NextIndex = len(rf.logs)
+			reply.MatchIndex = len(rf.logs) - 1
 			log.Printf("server %d: appended %v", rf.me, logEntry)
 			log.Printf("server %d: logs: %v", rf.me, rf.logs)
 			log.Printf("server %d: reply to %d: %v", rf.me, args.LeaderId, reply.Success)
@@ -523,19 +540,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		nextIndex++
 	}
-	//	log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
+	log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
 	if args.LeaderCommit > rf.commitIndex {
 		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
 		toCommit := args.LeaderCommit
-		if toCommit > len(rf.logs)-1 {
-			toCommit = len(rf.logs) - 1
+		if toCommit > rf.lastApplied {
+			toCommit = rf.lastApplied
 		}
 		for i := rf.commitIndex + 1; i <= toCommit; i++ {
 			log.Printf("logs: %v", rf.logs)
-			log.Printf("server %d: committing %v", rf.me, rf.logs[i])
+			log.Printf("server %d: committing %v", rf.me, rf.logs[i].Command)
+
 			rf.applyCh <- rf.logs[i].Command
+			rf.commitIndex = i
 		}
-		rf.commitIndex = args.LeaderCommit
 	}
 	log.Printf("server %d: s uccess", rf.me)
 	reply.Success = true
