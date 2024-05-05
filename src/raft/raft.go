@@ -356,7 +356,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			if i != rf.me {
 				go func(x int) {
 					//log.Printf("server %d: sent append entries to %d", rf.me, x)
-					ok := rf.sendAppendEntries(x, false)
+					ok := rf.sendAppendEntries(x, newIndex)
 					//log.Printf("server %d: response from %d: %v", rf.me, x, ok)
 					if ok {
 						committed++
@@ -398,15 +398,21 @@ func (rf *Raft) sendHeartbeats() {
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
 					//					log.Printf("server %d sent heartbeat to %d", rf.me, i)
-					go rf.sendAppendEntries(i, true)
+					go rf.sendAppendEntries(i, -1)
 				}
 			}
 			time.Sleep(150 * time.Millisecond)
 		}
 	}()
 }
-func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
+func (rf *Raft) sendAppendEntries(server int, index int) bool {
 
+	var heartbeat bool
+	if index != -1 {
+		heartbeat = false
+	} else {
+		heartbeat = true
+	}
 	lastIndex := len(rf.logs) - 1
 
 	// make an empty array to store entries to send
@@ -416,22 +422,22 @@ func (rf *Raft) sendAppendEntries(server int, heartbeat bool) bool {
 		rf.mu.Lock()
 		entries := make([]ApplyMsg, 0)
 		if !heartbeat {
-			if lastIndex >= rf.nextIndex[server] {
-				missingEntries := rf.logs[rf.nextIndex[server]:]
-				for _, entry := range missingEntries {
-					entries = append(entries, entry.Command)
+			if index >= rf.nextIndex[server] {
+				for i := rf.nextIndex[server]; i <= index; i++ {
+					entries = append(entries, rf.logs[i].Command)
 				}
-				lastIndex = len(rf.logs) - len(entries) - 1
-				rf.nextIndex[server] = len(rf.logs)
+				lastIndex = index
+				rf.nextIndex[server] = index + 1
 			}
 
 		}
+		log.Printf("server %d: index %v, heartbeat %v, entries %v", rf.me, index, heartbeat, entries)
 		log.Printf("server %d: sending entries to %d: %v", rf.me, server, entries)
 		log.Printf("server %d: lastIndex: %d, server %d nextIndex: %d", rf.me, lastIndex, server, rf.nextIndex[server])
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: lastIndex,
+			PrevLogIndex: index - len(entries),
 			PrevLogTerm:  rf.logs[lastIndex].Term,
 			Entries:      entries,
 			LeaderCommit: rf.commitIndex,
@@ -517,12 +523,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	}
 	// delete conflicting entries
+	log.Printf("server %d: entries before %v", rf.me, rf.logs)
 	nextIndex := args.PrevLogIndex + 1
-	if nextIndex < len(rf.logs) {
-		// if rf.logs[nextIndex].Term != args.Term {
-		rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
-		//}
-	}
+	//if nextIndex < len(rf.logs) {
+	// if rf.logs[nextIndex].Term != args.Term {
+	//	rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
+	//}
+	//}
+	log.Printf("server %d: entries after %v", rf.me, rf.logs)
 	// Append new entries not already in the log
 	for _, entry := range args.Entries {
 		logEntry := LogEntry{
@@ -546,14 +554,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		nextIndex++
 	}
 	//log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
+	log.Printf("server %d: looking at committing", rf.me)
 	if args.LeaderCommit > rf.commitIndex {
 		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
 		toCommit := args.LeaderCommit
 		if toCommit > rf.lastApplied {
 			toCommit = rf.lastApplied
 		}
+		log.Printf("server %d, toCommit %v, args.LeaderCommit %v, rf.commitIndex %v", rf.me, toCommit, args.LeaderCommit, rf.commitIndex)
+		log.Printf("server %d: logs: %v", rf.me, rf.logs)
 		for i := rf.commitIndex + 1; i <= toCommit; i++ {
-			log.Printf("logs: %v", rf.logs)
 			log.Printf("server %d: committing %v", rf.me, rf.logs[i].Command)
 
 			rf.applyCh <- rf.logs[i].Command
@@ -630,7 +640,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 
 	rf.nextIndex = make([]int, len(peers))
 	for i := range rf.nextIndex {
-		rf.nextIndex[i] = 1
+		rf.nextIndex[i] = 0
 	}
 	rf.matchIndex = make([]int, len(peers))
 
