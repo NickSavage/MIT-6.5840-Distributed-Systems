@@ -511,22 +511,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+	reply.Success = true
 	rf.lastHeartbeat = time.Now()
 	rf.currentTerm = args.Term
-	if len(args.Entries) == 0 {
-		reply.Success = true
-	}
 
-	if len(args.Entries) > 0 {
+	//	if len(args.Entries) > 0 {
 		log.Printf("server %d: received entries from %d: %v", rf.me, args.LeaderId, args.Entries)
 		log.Printf("server %d: PrevLogIndex: %d, len(rf.logs): %d", rf.me, args.PrevLogIndex, len(rf.logs))
 
-	}
+	//	}
 	// delete conflicting entries
 	log.Printf("server %d: entries before %v", rf.me, rf.logs)
 	nextIndex := args.PrevLogIndex + 1
-	//if nextIndex < len(rf.logs) {
-	// if rf.logs[nextIndex].Term != args.Term {
+	//if args.PrevLogIndex != -1 && nextIndex < len(rf.logs) {
+	//	if rf.logs[nextIndex].Term != args.Term {
 	//	rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
 	//}
 	//}
@@ -561,16 +559,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if toCommit > rf.lastApplied {
 			toCommit = rf.lastApplied
 		}
-		log.Printf("server %d, toCommit %v, args.LeaderCommit %v, rf.commitIndex %v", rf.me, toCommit, args.LeaderCommit, rf.commitIndex)
+		log.Printf("server %d: toCommit %v, args.LeaderCommit %v, rf.commitIndex %v", rf.me, toCommit, args.LeaderCommit, rf.commitIndex)
 		log.Printf("server %d: logs: %v", rf.me, rf.logs)
 		for i := rf.commitIndex + 1; i <= toCommit; i++ {
-			log.Printf("server %d: committing %v", rf.me, rf.logs[i].Command)
+			log.Printf("server %d: committed %v", rf.me, rf.logs[i].Command)
 
 			rf.applyCh <- rf.logs[i].Command
 			rf.commitIndex = i
 		}
 	}
-	reply.Success = true
 	log.Printf("server %d: reply to %d: %v", rf.me, args.LeaderId, reply.Success)
 }
 
@@ -643,6 +640,9 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 		rf.nextIndex[i] = 0
 	}
 	rf.matchIndex = make([]int, len(peers))
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = 0
+	}
 
 	rf.logs = make([]LogEntry, 0)
 	rf.logs = append(rf.logs, LogEntry{Command: ApplyMsg{CommandValid: false}, Term: 0})
