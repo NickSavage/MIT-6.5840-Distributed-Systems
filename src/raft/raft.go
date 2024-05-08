@@ -279,6 +279,7 @@ func (rf *Raft) startElection() {
 							rf.matchIndex[i] = 0
 						}
 					}
+					rf.matchIndex[rf.me] = len(rf.logs) - 1
 					rf.mu.Unlock()
 					if rf.state == "LEADER" {
 						rf.sendHeartbeats()
@@ -318,7 +319,7 @@ type AppendEntriesReply struct {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := rf.commitIndex
+	index := len(rf.logs)
 	term := rf.currentTerm
 	isLeader := true
 
@@ -335,10 +336,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	log.Printf("server %d: command: %v", rf.me, command)
 
-	newIndex := index + 1
 	newMessage := ApplyMsg{
 		Command:      command,
-		CommandIndex: newIndex,
+		CommandIndex: index,
 		CommandValid: true,
 	}
 
@@ -347,41 +347,21 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 	}
 	rf.logs = append(rf.logs, logEntry)
+	rf.lastApplied++
 
 	go func() {
-
-		committed := 1
-
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go func(x int) {
 					//log.Printf("server %d: sent append entries to %d", rf.me, x)
-					ok := rf.sendAppendEntries(x, newIndex)
-					//log.Printf("server %d: response from %d: %v", rf.me, x, ok)
-					if ok {
-						committed++
-					}
-					if committed > len(rf.peers)/2 {
-						//log.Printf("server %d: committed: %d", rf.me, committed)
-						if rf.commitIndex < newIndex {
-							for j := rf.commitIndex; j <= newIndex; j++ {
-
-								message := rf.logs[j].Command
-								log.Printf("server %d: leader committed %v", rf.me, message)
-								log.Printf("server %d: logs: %v", rf.me, rf.logs)
-								rf.applyCh <- message
-
-							}
-							//log.Printf("bumping commit index from %d to %d", rf.commitIndex, newIndex)
-							rf.commitIndex = newIndex
-						}
-					}
+					ok := rf.sendAppendEntries(x, index)
+					log.Printf("server %d: response from %d: %v", rf.me, x, ok)
 				}(i)
 			}
 		}
 	}()
 	rf.mu.Unlock()
-	return newIndex, term, isLeader
+	return index, term, isLeader
 }
 
 func (rf *Raft) sendHeartbeats() {
@@ -480,6 +460,7 @@ func (rf *Raft) sendAppendEntries(server int, index int) bool {
 			rf.mu.Lock()
 			rf.matchIndex[server] = reply.MatchIndex
 			rf.nextIndex[server] = reply.NextIndex
+			log.Printf("server %d: server %d matchIndex %d nextIndex %d", rf.me, server, reply.MatchIndex, reply.NextIndex)
 			rf.mu.Unlock()
 			result = reply.Success
 			break
@@ -516,8 +497,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.currentTerm = args.Term
 
 	//	if len(args.Entries) > 0 {
-		log.Printf("server %d: received entries from %d: %v", rf.me, args.LeaderId, args.Entries)
-		log.Printf("server %d: PrevLogIndex: %d, len(rf.logs): %d", rf.me, args.PrevLogIndex, len(rf.logs))
+	log.Printf("server %d: received entries from %d: %v", rf.me, args.LeaderId, args.Entries)
+	log.Printf("server %d: PrevLogIndex: %d, len(rf.logs): %d", rf.me, args.PrevLogIndex, len(rf.logs))
 
 	//	}
 	// delete conflicting entries
@@ -554,7 +535,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
 	log.Printf("server %d: looking at committing", rf.me)
 	if args.LeaderCommit > rf.commitIndex {
-		// not exactly correct, s/b index of last new entry or LeaderCommit, whichever is lower
 		toCommit := args.LeaderCommit
 		if toCommit > rf.lastApplied {
 			toCommit = rf.lastApplied
@@ -603,6 +583,32 @@ func (rf *Raft) ticker() {
 				// TODO: the paper says something about not calling an election if we've already voted in this term
 				rf.startElection()
 			}
+		}
+		if rf.state == "LEADER" {
+			// committing
+
+			log.Printf("server %d: checking on leader commits", rf.me)
+			rf.mu.Lock()
+			log.Printf("server %d: commitIndex %v, lastApplied %v", rf.me, rf.commitIndex, rf.lastApplied)
+			log.Printf("server %d: commit matchIndex %v", rf.me, rf.matchIndex)
+			for i := rf.commitIndex; i <= rf.lastApplied; i++ {
+				commits := 1
+				for peer := range rf.peers {
+					if rf.matchIndex[peer] >= i {
+						commits++
+					}
+				}
+				if commits > len(rf.peers)/2 {
+
+					message := rf.logs[i].Command
+					log.Printf("server %d: leader committed %v", rf.me, message)
+					log.Printf("server %d: logs: %v", rf.me, rf.logs)
+					rf.applyCh <- message
+					rf.commitIndex++
+				}
+			}
+			rf.mu.Unlock()
+
 		}
 		ms := 300 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
