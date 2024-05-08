@@ -504,11 +504,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// delete conflicting entries
 	log.Printf("server %d: entries before %v", rf.me, rf.logs)
 	nextIndex := args.PrevLogIndex + 1
-	//if args.PrevLogIndex != -1 && nextIndex < len(rf.logs) {
-	//	if rf.logs[nextIndex].Term != args.Term {
-	//	rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
-	//}
-	//}
+	if args.PrevLogIndex != -1 && nextIndex < len(rf.logs) {
+		if rf.logs[nextIndex].Term != args.Term {
+			rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
+		}
+	}
 	log.Printf("server %d: entries after %v", rf.me, rf.logs)
 	// Append new entries not already in the log
 	for _, entry := range args.Entries {
@@ -600,6 +600,8 @@ func (rf *Raft) ticker() {
 				}
 				if commits > len(rf.peers)/2 {
 
+					//TODO this issue with this is that it treats commitIndex like it is 0 indexed, when it should be 1 indexed. FailNoAgree isn't working becuase of that
+					// need to figure out how to convert this to a 1 indexed, it wasn't obvious when I tried it
 					message := rf.logs[i].Command
 					log.Printf("server %d: leader committed %v", rf.me, message)
 					log.Printf("server %d: logs: %v", rf.me, rf.logs)
