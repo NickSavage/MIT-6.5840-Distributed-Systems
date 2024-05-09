@@ -522,7 +522,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.lastApplied = len(rf.logs) - 1
 			reply.NextIndex = len(rf.logs)
 			reply.MatchIndex = len(rf.logs) - 1
-			log.Printf("server %d: appended %v", rf.me, logEntry)
+			log.Printf("server %d: tocommit, appended %v", rf.me, logEntry)
 			log.Printf("server %d: log status: %v", rf.me, rf.logs)
 		} else {
 			// If already the same log exists, no need to append
@@ -541,7 +541,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		log.Printf("server %d: toCommit %v, args.LeaderCommit %v, rf.commitIndex %v", rf.me, toCommit, args.LeaderCommit, rf.commitIndex)
 		log.Printf("server %d: logs: %v", rf.me, rf.logs)
-		for i := rf.commitIndex + 1; i <= toCommit; i++ {
+		for i := rf.commitIndex; i <= toCommit; i++ {
 			log.Printf("server %d: committed %v", rf.me, rf.logs[i].Command)
 
 			rf.applyCh <- rf.logs[i].Command
@@ -591,7 +591,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			log.Printf("server %d: commitIndex %v, lastApplied %v", rf.me, rf.commitIndex, rf.lastApplied)
 			log.Printf("server %d: commit matchIndex %v", rf.me, rf.matchIndex)
-			for i := rf.commitIndex; i <= rf.lastApplied; i++ {
+			for i := rf.commitIndex + 1; i <= rf.lastApplied; i++ {
 				commits := 1
 				for peer := range rf.peers {
 					if rf.matchIndex[peer] >= i {
@@ -606,7 +606,10 @@ func (rf *Raft) ticker() {
 					log.Printf("server %d: leader committed %v", rf.me, message)
 					log.Printf("server %d: logs: %v", rf.me, rf.logs)
 					rf.applyCh <- message
-					rf.commitIndex++
+					if !(i == 0) {
+						rf.commitIndex++
+
+					}
 				}
 			}
 			rf.mu.Unlock()
