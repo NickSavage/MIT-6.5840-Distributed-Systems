@@ -319,6 +319,8 @@ type AppendEntriesReply struct {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := len(rf.logs)
 	term := rf.currentTerm
 	isLeader := true
@@ -333,7 +335,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return index, term, isLeader
 	}
 
-	rf.mu.Lock()
 	log.Printf("server %d: command: %v", rf.me, command)
 
 	newMessage := ApplyMsg{
@@ -349,6 +350,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, logEntry)
 	rf.lastApplied++
 
+	log.Printf("server %d: logs %v", rf.me, rf.logs)
 	go func() {
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
@@ -360,7 +362,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}
 		}
 	}()
-	rf.mu.Unlock()
 	return index, term, isLeader
 }
 
