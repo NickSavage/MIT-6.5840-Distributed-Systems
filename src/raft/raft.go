@@ -393,6 +393,7 @@ func (rf *Raft) sendAppendEntries(server int, index int) bool {
 		heartbeat = false
 	} else {
 		heartbeat = true
+		index = len(rf.logs) - 1
 	}
 	lastIndex := len(rf.logs) - 1
 
@@ -456,7 +457,7 @@ func (rf *Raft) sendAppendEntries(server int, index int) bool {
 		if reply.Success {
 
 			// TODO this is wrong! we're setting nextIndex when we absolutely should not be
-			log.Printf("server %d: setting nextIndex for %d to %d", rf.me, server, len(rf.logs))
+			log.Printf("server %d: setting nextIndex for %d to %d", rf.me, server, reply.NextIndex)
 			log.Printf("server %d: heartbeat: %v", rf.me, heartbeat)
 			rf.mu.Lock()
 			rf.matchIndex[server] = reply.MatchIndex
@@ -505,9 +506,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// delete conflicting entries
 	log.Printf("server %d: entries before %v", rf.me, rf.logs)
 	nextIndex := args.PrevLogIndex + 1
-	if args.PrevLogIndex != -1 && nextIndex < len(rf.logs) {
+	if nextIndex < len(rf.logs) {
 		if rf.logs[nextIndex].Term != args.Term {
 			rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
+			reply.NextIndex = len(rf.logs)
+			reply.MatchIndex = len(rf.logs) - 1
 		}
 	}
 	log.Printf("server %d: entries after %v", rf.me, rf.logs)
