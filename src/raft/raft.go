@@ -275,7 +275,7 @@ func (rf *Raft) startElection() {
 					// Additional code to handle transition to leader, e.g., sending initial empty AppendEntries to all followers
 					for i := 0; i < len(rf.peers); i++ {
 						if i != rf.me {
-							rf.nextIndex[i] = len(rf.logs) + 1
+							rf.nextIndex[i] = len(rf.logs)
 							rf.matchIndex[i] = 0
 						}
 					}
@@ -389,29 +389,33 @@ func (rf *Raft) sendHeartbeats() {
 func (rf *Raft) sendAppendEntries(server int, index int) bool {
 
 	var heartbeat bool
+	var lastIndex int
+
 	if index != -1 {
 		heartbeat = false
 	} else {
 		heartbeat = true
 		index = len(rf.logs) - 1
 	}
-	lastIndex := len(rf.logs) - 1
 
 	// make an empty array to store entries to send
 	var result bool
 
 	for {
 		rf.mu.Lock()
+		lastIndex = rf.nextIndex[server] - 1
 		entries := make([]ApplyMsg, 0)
 		if !heartbeat {
 			if index >= rf.nextIndex[server] {
 				for i := rf.nextIndex[server]; i <= index; i++ {
 					entries = append(entries, rf.logs[i].Command)
 				}
-				lastIndex = index
 				rf.nextIndex[server] = index + 1
 			}
 
+		}
+		if lastIndex < 0 {
+			lastIndex = 0
 		}
 		log.Printf("server %d: index %v, heartbeat %v, entries %v", rf.me, index, heartbeat, entries)
 		log.Printf("server %d: sending entries to %d: %v", rf.me, server, entries)
@@ -419,7 +423,7 @@ func (rf *Raft) sendAppendEntries(server int, index int) bool {
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: index - len(entries),
+			PrevLogIndex: lastIndex,
 			PrevLogTerm:  rf.logs[lastIndex].Term,
 			Entries:      entries,
 			LeaderCommit: rf.commitIndex,
@@ -447,10 +451,7 @@ func (rf *Raft) sendAppendEntries(server int, index int) bool {
 			}
 			// if lastIndex >= nextIndex, we have an inconsistency, otherwise we're dealing with heartbeats
 			rf.mu.Lock()
-			if lastIndex > 0 {
-				lastIndex--
-				rf.nextIndex[server] = lastIndex
-			}
+			rf.nextIndex[server]--
 			rf.mu.Unlock()
 			//	log.Printf("Log inconsistency with server %d, we're going to try again", server)
 		}
@@ -477,20 +478,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//log.Printf("is this thing on?")
 	reply.Term = rf.currentTerm
 	reply.NextIndex = len(rf.logs)
-	reply.MatchIndex = len(rf.logs) - 1
+	reply.MatchIndex = rf.lastApplied
 	if rf.state == "LEADER" {
 		if args.Term > rf.currentTerm {
 			rf.state = "FOLLOWER"
 			rf.votedFor = -1
 		}
 	}
-	//log.Printf("server %d: received append entries from %d", rf.me, args.LeaderId)
-	//log.Printf("Server %d: args.Term: %d, rf.currentTerm: %d", rf.me, args.Term, rf.currentTerm)
+	log.Printf("server %d: received append entries from %d", rf.me, args.LeaderId)
+	log.Printf("Server %d: args.Term: %d, rf.currentTerm: %d", rf.me, args.Term, rf.currentTerm)
+	log.Printf("server %d: len(rf.logs) %d, args.PrevLogIndex %d", rf.me, len(rf.logs), args.PrevLogIndex)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
 	}
-	if len(rf.logs) < args.PrevLogIndex {
+	if args.PrevLogIndex >= len(rf.logs) || args.PrevLogIndex < 0 {
+		reply.Success = false
+		return
+	}
+	log.Printf("server %d: rf.logs[args.PrevLogIndex].Term %d, args.PrevLogTerm %d", rf.me, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+
+	// Check if log term at PrevLogIndex matches args.PrevLogTerm
+	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		return
 	}
@@ -509,8 +518,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if nextIndex < len(rf.logs) {
 		if rf.logs[nextIndex].Term != args.Term {
 			rf.logs = rf.logs[:nextIndex] // Remove conflicting entries
+			rf.lastApplied = len(rf.logs) - 1
 			reply.NextIndex = len(rf.logs)
-			reply.MatchIndex = len(rf.logs) - 1
 		}
 	}
 	log.Printf("server %d: entries after %v", rf.me, rf.logs)
@@ -524,8 +533,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if nextIndex >= len(rf.logs) {
 			rf.logs = append(rf.logs, logEntry)
 			rf.lastApplied = len(rf.logs) - 1
-			reply.NextIndex = len(rf.logs)
-			reply.MatchIndex = len(rf.logs) - 1
 			log.Printf("server %d: tocommit, appended %v", rf.me, logEntry)
 			log.Printf("server %d: log status: %v", rf.me, rf.logs)
 		} else {
@@ -536,6 +543,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		nextIndex++
 	}
+	reply.NextIndex = len(rf.logs)
+	reply.MatchIndex = rf.lastApplied
 	//log.Printf("args.LeaderCommit: %d, rf.commitIndex: %d", args.LeaderCommit, rf.commitIndex)
 	log.Printf("server %d: looking at committing", rf.me)
 	if args.LeaderCommit > rf.commitIndex {
